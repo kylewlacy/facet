@@ -1,5 +1,6 @@
 use core::hash::Hash;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 
 use crate::ptr::{PtrConst, PtrMut};

@@ -62,8 +62,10 @@ pub enum ScalarAffinity {
     Empty(EmptyAffinity),
     /// Socket address scalar affinity
     SocketAddr(SocketAddrAffinity),
-    /// Ip Address scalar affinity
+    /// IP Address scalar affinity
     IpAddr(IpAddrAffinity),
+    /// URL scalar affinity
+    Url(UrlAffinity),
     /// UUID or UUID-like identifier, containing 16 bytes of information
     UUID(UuidAffinity),
     /// ULID or ULID-like identifier, containing 16 bytes of information
@@ -114,6 +116,11 @@ impl ScalarAffinity {
     /// Returns an IpAddrAffinityBuilder
     pub const fn ip_addr() -> IpAddrAffinityBuilder {
         IpAddrAffinityBuilder::new()
+    }
+
+    /// Returns a UrlAffinityBuilder
+    pub const fn url() -> UrlAffinityBuilder {
+        UrlAffinityBuilder::new()
     }
 
     /// Returns an UuidAffinityBuilder
@@ -650,6 +657,36 @@ impl IpAddrAffinityBuilder {
     /// Builds the ScalarAffinity
     pub const fn build(self) -> ScalarAffinity {
         ScalarAffinity::IpAddr(IpAddrAffinity {})
+    }
+}
+
+/// Definition for URL scalar affinities
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(C)]
+#[non_exhaustive]
+pub struct UrlAffinity {}
+
+impl UrlAffinity {
+    /// Returns a builder for UrlAffinity
+    pub const fn builder() -> UrlAffinityBuilder {
+        UrlAffinityBuilder::new()
+    }
+}
+
+/// Builder for UrlAffinity
+#[repr(C)]
+pub struct UrlAffinityBuilder {}
+
+impl UrlAffinityBuilder {
+    /// Creates a new UrlAffinityBuilder
+    #[allow(clippy::new_without_default)]
+    pub const fn new() -> Self {
+        Self {}
+    }
+
+    /// Builds the ScalarAffinity
+    pub const fn build(self) -> ScalarAffinity {
+        ScalarAffinity::Url(UrlAffinity {})
     }
 }
 

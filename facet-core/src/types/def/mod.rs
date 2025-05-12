@@ -12,6 +12,9 @@ pub use list::*;
 mod map;
 pub use map::*;
 
+mod set;
+pub use set::*;
+
 mod option;
 pub use option::*;
 
@@ -45,6 +48,11 @@ pub enum Def {
     ///
     /// e.g. `Map<String, T>`
     Map(MapDef),
+
+    /// Unique set of homogenous values
+    ///
+    /// e.g. `HashSet<T>`
+    Set(SetDef),
 
     /// Ordered list of heterogenous values, variable size
     ///
@@ -83,6 +91,13 @@ impl Def {
     pub fn into_map(self) -> Result<MapDef, Self> {
         match self {
             Self::Map(def) => Ok(def),
+            _ => Err(self),
+        }
+    }
+    /// Returns the `SetDef` wrapped in an `Ok` if this is a [`Def::Set`].
+    pub fn into_set(self) -> Result<SetDef, Self> {
+        match self {
+            Self::Set(def) => Ok(def),
             _ => Err(self),
         }
     }

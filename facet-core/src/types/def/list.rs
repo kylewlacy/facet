@@ -102,8 +102,7 @@ pub type ListAsPtrFn = unsafe fn(list: PtrConst) -> PtrConst;
 /// The `list` parameter must point to aligned, initialized memory of the correct type.
 pub type ListAsMutPtrFn = unsafe fn(list: PtrMut) -> PtrMut;
 
-/// Virtual table for a list-like type (like `Vec<T>`,
-/// but also `HashSet<T>`, etc.)
+/// Virtual table for a list-like type (like `Vec<T>`)
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 #[non_exhaustive]

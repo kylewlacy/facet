@@ -46,7 +46,7 @@ pub enum Def {
 
     /// Map — keys are dynamic (and strings, sorry), values are homogeneous
     ///
-    /// e.g. `Map<String, T>`
+    /// e.g. `HashMap<String, T>`
     Map(MapDef),
 
     /// Unique set of homogenous values

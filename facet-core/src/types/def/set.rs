@@ -178,7 +178,7 @@ impl SetIterVTableBuilder {
     }
 }
 
-/// Virtual table for a Set<T>
+/// Virtual table for a `Set<T>`
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SetVTable {

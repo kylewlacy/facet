@@ -334,6 +334,39 @@ impl<'mem, 'facet_lifetime> Peek<'mem, 'facet_lifetime> {
         }
     }
 
+    /// Tries to read the inner value of a transparent wrapper type. For
+    /// example, `Box<Vec<u8>>` will get the inner `Vec<u8>` value.
+    ///
+    /// Returns `Ok(Some(Peek))` with the inner value, `Ok(None)` if this shape
+    /// has no inner shape, or `Err(_)` if the inner value could not be
+    /// borrowed.
+    ///
+    /// See also [Self::innermost_peek], which repeats this process until
+    /// reaching the innermost value.
+    pub fn inner_peek(self) -> Result<Option<Self>, ReflectError> {
+        // Resolve smart pointers by traversing into their inner type
+        if let (Def::SmartPointer(_), Some(try_borrow_inner_fn), Some(inner_shape)) = (
+            self.shape.def,
+            self.shape.vtable.try_borrow_inner,
+            self.shape.inner,
+        ) {
+            let inner_data = unsafe { try_borrow_inner_fn(self.data) };
+            let inner_data = inner_data.map_err(|e| ReflectError::TryBorrowInnerError {
+                shape: self.shape,
+                inner_shape: inner_shape(),
+                inner: e,
+            })?;
+
+            Ok(Some(Peek {
+                data: inner_data,
+                shape: inner_shape(),
+                invariant: PhantomData,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Tries to return the innermost value — useful for serialization. For example, we serialize a `NonZero<u8>` the same
     /// as a `u8`. Similarly, we serialize a `Utf8PathBuf` the same as a `String.
     ///
@@ -341,24 +374,17 @@ impl<'mem, 'facet_lifetime> Peek<'mem, 'facet_lifetime> {
     /// For example, this will peel through newtype wrappers or smart pointers that have an `inner`.
     pub fn innermost_peek(self) -> Self {
         let mut current_peek = self;
-        while let (Some(try_borrow_inner_fn), Some(inner_shape)) = (
-            current_peek.shape.vtable.try_borrow_inner,
-            current_peek.shape.inner,
-        ) {
-            unsafe {
-                let inner_data = try_borrow_inner_fn(current_peek.data).unwrap_or_else(|e| {
-                    panic!("innermost_peek: try_borrow_inner returned an error! was trying to go from {} to {}. error: {e}", current_peek.shape,
-                        inner_shape())
-                });
+        loop {
+            let inner = current_peek.inner_peek().unwrap_or_else(|e| {
+                panic!("innermost_peek: error while trying to get the inner value. error: {e}")
+            });
+            let Some(inner) = inner else {
+                // We reached the innermost type, so we're done
+                return current_peek;
+            };
 
-                current_peek = Peek {
-                    data: inner_data,
-                    shape: inner_shape(),
-                    invariant: PhantomData,
-                };
-            }
+            current_peek = inner;
         }
-        current_peek
     }
 }
 

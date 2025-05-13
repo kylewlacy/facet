@@ -1,4 +1,6 @@
-use facet_core::{Characteristic, EnumType, Field, FieldError, Shape, TryFromError};
+use facet_core::{
+    Characteristic, EnumType, Field, FieldError, Shape, TryBorrowInnerError, TryFromError,
+};
 use owo_colors::OwoColorize;
 
 /// Errors that can occur when reflecting on types.
@@ -108,6 +110,19 @@ pub enum ReflectError {
 
         /// The inner error
         inner: TryFromError,
+    },
+
+    /// An error occurred while trying to borrow an inner value from
+    /// a transparent wrapper value, such as a smart pointer.
+    TryBorrowInnerError {
+        /// The outer shape being borrowed from.
+        shape: &'static Shape,
+
+        /// The inner shape being borrowed.
+        inner_shape: &'static Shape,
+
+        /// The inner error.
+        inner: TryBorrowInnerError,
     },
 
     /// A shape has a `default` attribute, but no implementation of the `Default` trait.
@@ -230,6 +245,19 @@ impl core::fmt::Display for ReflectError {
                     "While trying to put {} into a {}: {}",
                     src_shape.green(),
                     dst_shape.blue(),
+                    inner.red()
+                )
+            }
+            ReflectError::TryBorrowInnerError {
+                shape,
+                inner_shape,
+                inner,
+            } => {
+                write!(
+                    f,
+                    "Failed to borrow inner {} from {}: {}",
+                    inner_shape.blue(),
+                    shape.blue(),
                     inner.red()
                 )
             }

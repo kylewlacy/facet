@@ -1,7 +1,7 @@
 use core::{cmp::Ordering, marker::PhantomData};
 use facet_core::{
-    Def, Facet, PointerType, PtrConst, PtrMut, SequenceType, Shape, Type, TypeNameOpts, UserType,
-    ValueVTable,
+    Def, Facet, PointerType, PtrConst, PtrMut, SequenceType, Shape, ShapeAttribute, Type,
+    TypeNameOpts, UserType, ValueVTable,
 };
 
 use crate::{ReflectError, ScalarType};
@@ -344,27 +344,48 @@ impl<'mem, 'facet_lifetime> Peek<'mem, 'facet_lifetime> {
     /// See also [Self::innermost_peek], which repeats this process until
     /// reaching the innermost value.
     pub fn inner_peek(self) -> Result<Option<Self>, ReflectError> {
-        // Resolve smart pointers by traversing into their inner type
-        if let (Def::SmartPointer(_), Some(try_borrow_inner_fn), Some(inner_shape)) = (
-            self.shape.def,
-            self.shape.vtable.try_borrow_inner,
-            self.shape.inner,
-        ) {
-            let inner_data = unsafe { try_borrow_inner_fn(self.data) };
-            let inner_data = inner_data.map_err(|e| ReflectError::TryBorrowInnerError {
-                shape: self.shape,
-                inner_shape: inner_shape(),
-                inner: e,
-            })?;
+        // Resolve wrapper types by traversing into their inner type
+        let is_wrapper = matches!(self.shape.def, Def::SmartPointer(_))
+            || matches!(self.shape.ty, Type::Pointer(PointerType::Reference(_)));
+        if is_wrapper {
+            if let (Some(try_borrow_inner_fn), Some(inner_shape)) =
+                (self.shape.vtable.try_borrow_inner, self.shape.inner)
+            {
+                let inner_data = unsafe { try_borrow_inner_fn(self.data) };
+                let inner_data = inner_data.map_err(|e| ReflectError::TryBorrowInnerError {
+                    shape: self.shape,
+                    inner_shape: inner_shape(),
+                    inner: e,
+                })?;
 
-            Ok(Some(Peek {
-                data: inner_data,
-                shape: inner_shape(),
-                invariant: PhantomData,
-            }))
-        } else {
-            Ok(None)
+                return Ok(Some(Peek {
+                    data: inner_data,
+                    shape: inner_shape(),
+                    invariant: PhantomData,
+                }));
+            }
         }
+
+        // Resolve #[facet(transparent)] attribute to returning the inner field
+        let is_transparent = self
+            .shape
+            .attributes
+            .iter()
+            .any(|attr| *attr == ShapeAttribute::Transparent);
+        if is_transparent {
+            let peek_struct = self
+                .into_struct()
+                .map_err(|_| ReflectError::InvariantViolation {
+                    invariant: "shape has #[facet(transparent)] attr but is not a struct",
+                })?;
+            let inner = peek_struct.field(0).map_err(|e| ReflectError::FieldError {
+                shape: self.shape,
+                field_error: e,
+            })?;
+            return Ok(Some(inner));
+        }
+
+        Ok(None)
     }
 
     /// Tries to return the innermost value — useful for serialization. For example, we serialize a `NonZero<u8>` the same

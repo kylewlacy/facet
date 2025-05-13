@@ -1,317 +1,285 @@
-use facet_core::Facet;
-use facet_reflect::Peek;
-use facet_serialize::{Serializer, serialize_iterative};
-use log::debug;
 use std::io::{self, Write};
+
+use alloc::collections::VecDeque;
+use facet_core::{Def, Facet, ScalarAffinity, StructKind};
+use facet_reflect::{HasFields, Peek};
+
+#[derive(Debug)]
+enum SerializeOp<'mem, 'facet_lifetime> {
+    Value(Peek<'mem, 'facet_lifetime>),
+    Array {
+        first: bool,
+        items: VecDeque<Peek<'mem, 'facet_lifetime>>,
+    },
+    Object {
+        first: bool,
+        entries: VecDeque<(
+            ObjectKey<'mem, 'facet_lifetime>,
+            Peek<'mem, 'facet_lifetime>,
+        )>,
+    },
+}
+
+#[derive(Debug)]
+enum ObjectKey<'mem, 'facet_lifetime> {
+    String(&'static str),
+    Value(Peek<'mem, 'facet_lifetime>),
+}
 
 /// Serializes a value to JSON
 pub fn to_string<'a, T: Facet<'a>>(value: &T) -> String {
-    let peek = Peek::new(value);
-    let mut output = Vec::new();
-    let mut serializer = JsonSerializer::new(&mut output);
-    serialize_iterative(peek, &mut serializer).unwrap();
-    String::from_utf8(output).unwrap()
+    peek_to_string(&Peek::new(value))
 }
 
 /// Serializes a Peek instance to JSON
 pub fn peek_to_string(peek: &Peek<'_, '_>) -> String {
     let mut output = Vec::new();
-    let mut serializer = JsonSerializer::new(&mut output);
-    serialize_iterative(*peek, &mut serializer).unwrap();
+    peek_to_writer(peek, &mut output).unwrap();
     String::from_utf8(output).unwrap()
 }
 
 /// Serializes a value to a writer in JSON format
 pub fn to_writer<'a, T: Facet<'a>, W: Write>(value: &T, writer: &mut W) -> io::Result<()> {
-    let peek = Peek::new(value);
-    let mut serializer = JsonSerializer::new(writer);
-    serialize_iterative(peek, &mut serializer)
+    peek_to_writer(&Peek::new(value), writer)
 }
 
 /// Serializes a Peek instance to a writer in JSON format
 pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Result<()> {
-    let mut serializer = JsonSerializer::new(writer);
-    serialize_iterative(*peek, &mut serializer)
-}
+    let mut queue = VecDeque::from_iter([SerializeOp::Value(*peek)]);
 
-#[derive(Debug)]
-enum StackItem {
-    ArrayItem { first: bool },
-    ObjectItem { object_state: ObjectItemState },
-}
-
-#[derive(Debug)]
-enum ObjectItemState {
-    FirstKey,
-    Key,
-    Value,
-}
-
-/// A serializer for JSON format that implements the `facet_serialize::Serializer` trait.
-pub struct JsonSerializer<W> {
-    writer: W,
-    stack: Vec<StackItem>,
-}
-
-impl<W> JsonSerializer<W>
-where
-    W: Write,
-{
-    /// Creates a new JSON serializer with the given writer.
-    pub fn new(writer: W) -> Self {
-        Self {
-            writer,
-            stack: Vec::new(),
-        }
-    }
-
-    fn start_value(&mut self) -> Result<(), io::Error> {
-        debug!("start_value, stack = {:?}", self.stack);
-
-        match self.stack.last_mut() {
-            Some(StackItem::ArrayItem { first }) => {
-                if *first {
-                    *first = false;
-                } else {
-                    write!(self.writer, ",")?;
+    while let Some(op) = queue.pop_front() {
+        let mut value = match op {
+            SerializeOp::Value(value) => value,
+            SerializeOp::Array { first, mut items } => {
+                if first {
+                    write!(writer, "[").unwrap();
                 }
+
+                let Some(next_item) = items.pop_front() else {
+                    // Finished writing list, go to the next op
+                    write!(writer, "]").unwrap();
+                    continue;
+                };
+
+                if !first {
+                    write!(writer, ",").unwrap();
+                }
+
+                queue.push_front(SerializeOp::Array {
+                    first: false,
+                    items,
+                });
+                next_item
             }
-            Some(StackItem::ObjectItem { object_state }) => {
-                debug!("ObjectItem: object_state = {:?}", object_state);
-                match object_state {
-                    ObjectItemState::FirstKey => {
-                        *object_state = ObjectItemState::Value;
+            SerializeOp::Object { first, mut entries } => {
+                if first {
+                    write!(writer, "{{").unwrap();
+                }
+
+                let Some((key, entry)) = entries.pop_front() else {
+                    write!(writer, "}}").unwrap();
+                    continue;
+                };
+
+                if !first {
+                    write!(writer, ",").unwrap();
+                }
+
+                match key {
+                    ObjectKey::String(key) => {
+                        write_json_string(writer, key).unwrap();
                     }
-                    ObjectItemState::Key => {
-                        write!(self.writer, ",")?;
-                        *object_state = ObjectItemState::Value;
-                    }
-                    ObjectItemState::Value => {
-                        write!(self.writer, ":")?;
-                        *object_state = ObjectItemState::Key;
+                    ObjectKey::Value(peek) => {
+                        if let Some(s) = peek.as_str() {
+                            write_json_string(writer, s).unwrap();
+                        } else {
+                            let s = peek.to_string();
+                            write_json_string(writer, &s).unwrap();
+                        }
                     }
                 }
+
+                write!(writer, ":").unwrap();
+
+                queue.push_front(SerializeOp::Object {
+                    first: false,
+                    entries,
+                });
+                entry
             }
-            None => {
-                debug!("No stack frame (top-level value)");
-            }
+        };
+
+        // Handle options and wrappers
+        if let Some(inner) = innermost_option_peek(value) {
+            value = inner;
+        } else {
+            // Got None value, so write "null" and go to the next op
+            write!(writer, "null").unwrap();
+            continue;
         }
 
-        Ok(())
+        let shape = value.shape();
+        if let Def::Scalar(scalar_def) = shape.def {
+            match scalar_def.affinity {
+                ScalarAffinity::Number(_) => {
+                    // Write numbers directly.
+                    // TODO: Figure out a better way to do this. Ideally, this
+                    // should prevent invalid JSON numbers, but also allow
+                    // things beyond floats
+                    write!(writer, "{value}").unwrap();
+                }
+                ScalarAffinity::Boolean(_) => {
+                    let Ok(&boolean) = value.get::<bool>() else {
+                        panic!("shape {shape} has a boolean affinity, but could not get boolean");
+                    };
+                    if boolean {
+                        write!(writer, "true").unwrap();
+                    } else {
+                        write!(writer, "false").unwrap();
+                    }
+                }
+                ScalarAffinity::Empty(_) => {
+                    write!(writer, "null").unwrap();
+                }
+                _ => {
+                    if let Some(s) = value.as_str() {
+                        write_json_string(writer, s).unwrap();
+                    } else {
+                        let s = value.to_string();
+                        write_json_string(writer, &s).unwrap();
+                    }
+                }
+            }
+        } else if let Some(s) = value.as_str() {
+            write_json_string(writer, s).unwrap();
+        } else if let Ok(peek_tuple) = value.into_tuple() {
+            let items = peek_tuple.fields().map(|(_, field)| field).collect();
+            queue.push_front(SerializeOp::Array { first: true, items });
+        } else if let Ok(peek_list) = value.into_list_like() {
+            let items = peek_list.iter().collect();
+            queue.push_front(SerializeOp::Array { first: true, items });
+        } else if let Ok(peek_struct) = value.into_struct() {
+            match peek_struct.ty().kind {
+                StructKind::Unit => {
+                    // Unit struct, serialize as null
+                    write!(writer, "null").unwrap();
+                    continue;
+                }
+                StructKind::TupleStruct => {
+                    // Tuple struct, serialize as an array
+                    let items = peek_struct
+                        .fields_for_serialize()
+                        .map(|(_, value)| value)
+                        .collect();
+                    queue.push_front(SerializeOp::Array { first: true, items });
+                }
+                StructKind::Struct => {
+                    // Serialize struct as object
+                    let entries = peek_struct
+                        .fields_for_serialize()
+                        .map(|(key, value)| (ObjectKey::String(key.name), value))
+                        .collect();
+                    queue.push_front(SerializeOp::Object {
+                        first: true,
+                        entries,
+                    });
+                }
+                _ => unimplemented!("unsupported struct kind"),
+            }
+        } else if let Ok(peek_enum) = value.into_enum() {
+            let variant = peek_enum.active_variant().unwrap();
+            match variant.data.kind {
+                StructKind::Unit => {
+                    // Unit enum variant, serialize as a string based on the
+                    // variant name
+                    write_json_string(writer, variant.name).unwrap();
+                }
+                StructKind::Tuple if variant.data.fields.len() == 1 => {
+                    // Single-element tuple variant, serialize the inner
+                    // variant transparently
+
+                    write!(writer, "{{").unwrap();
+                    write_json_string(writer, variant.name).unwrap();
+                    write!(writer, ":").unwrap();
+                    queue.push_front(SerializeOp::Object {
+                        first: false,
+                        entries: VecDeque::new(),
+                    });
+
+                    let inner = peek_enum.field(0).unwrap().unwrap();
+                    queue.push_front(SerializeOp::Value(inner));
+                }
+                StructKind::Tuple => {
+                    // Normal tuple variant, serialize the variant as an array
+
+                    write!(writer, "{{").unwrap();
+                    write_json_string(writer, variant.name).unwrap();
+                    write!(writer, ":").unwrap();
+                    queue.push_front(SerializeOp::Object {
+                        first: false,
+                        entries: VecDeque::new(),
+                    });
+
+                    let items = peek_enum
+                        .fields_for_serialize()
+                        .map(|(_, item)| item)
+                        .collect();
+                    queue.push_front(SerializeOp::Array { first: true, items });
+                }
+                StructKind::Struct => {
+                    // Struct variant, serialize as an object
+                    // Normal tuple variant, serialize the variant as an array
+
+                    write!(writer, "{{").unwrap();
+                    write_json_string(writer, variant.name).unwrap();
+                    write!(writer, ":").unwrap();
+                    queue.push_front(SerializeOp::Object {
+                        first: false,
+                        entries: VecDeque::new(),
+                    });
+
+                    let entries = peek_enum
+                        .fields_for_serialize()
+                        .map(|(field, value)| (ObjectKey::String(field.name), value))
+                        .collect();
+                    queue.push_front(SerializeOp::Object {
+                        first: true,
+                        entries,
+                    });
+                }
+                kind => unimplemented!("unhandled enum variant kind for shape {shape}: {kind:?}"),
+            }
+        } else if let Ok(map) = value.into_map() {
+            let entries = map
+                .iter()
+                .map(|(key, value)| (ObjectKey::Value(key), value))
+                .collect();
+            queue.push_front(SerializeOp::Object {
+                first: true,
+                entries,
+            });
+        } else {
+            todo!("unhandled shape {shape}: {:?}", shape.def);
+        }
     }
 
-    fn end_value(&mut self) -> Result<(), io::Error> {
-        Ok(())
-    }
+    Ok(())
 }
 
-impl<W> Serializer for JsonSerializer<W>
-where
-    W: Write,
-{
-    type Error = io::Error;
+fn innermost_option_peek<'mem, 'facet_lifetime>(
+    mut peek: Peek<'mem, 'facet_lifetime>,
+) -> Option<Peek<'mem, 'facet_lifetime>> {
+    loop {
+        // Resolve the innermost value of any wrapper types (references, etc.)
+        peek = peek.innermost_peek();
 
-    fn serialize_u8(&mut self, value: u8) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
+        let Ok(peek_option) = peek.into_option() else {
+            // Value is not an option, so we're done
+            return Some(peek);
+        };
 
-    fn serialize_u16(&mut self, value: u16) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_u32(&mut self, value: u32) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_u64(&mut self, value: u64) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_u128(&mut self, value: u128) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_usize(&mut self, value: usize) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_i8(&mut self, value: i8) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_i16(&mut self, value: i16) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_i32(&mut self, value: i32) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_i64(&mut self, value: i64) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_i128(&mut self, value: i128) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_isize(&mut self, value: isize) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_f32(&mut self, value: f32) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_f64(&mut self, value: f64) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", value)?;
-        self.end_value()
-    }
-
-    fn serialize_bool(&mut self, value: bool) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write!(self.writer, "{}", if value { "true" } else { "false" })?;
-        self.end_value()
-    }
-
-    fn serialize_char(&mut self, value: char) -> Result<(), Self::Error> {
-        self.start_value()?;
-        self.writer.write_all(b"\"")?;
-        write_json_escaped_char(&mut self.writer, value)?;
-        self.writer.write_all(b"\"")?;
-        self.end_value()
-    }
-
-    fn serialize_str(&mut self, value: &str) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write_json_string(&mut self.writer, value)?;
-        self.end_value()
-    }
-
-    fn serialize_bytes(&mut self, _value: &[u8]) -> Result<(), Self::Error> {
-        panic!("JSON does not support byte arrays")
-    }
-
-    fn serialize_none(&mut self) -> Result<(), Self::Error> {
-        self.start_value()?;
-        self.writer.write_all(b"null")?;
-        self.end_value()
-    }
-
-    fn serialize_unit(&mut self) -> Result<(), Self::Error> {
-        self.start_value()?;
-        self.writer.write_all(b"null")?;
-        self.end_value()
-    }
-
-    fn serialize_unit_variant(
-        &mut self,
-        _variant_index: usize,
-        variant_name: &'static str,
-    ) -> Result<(), Self::Error> {
-        self.start_value()?;
-        write_json_string(&mut self.writer, variant_name)?;
-        self.end_value()
-    }
-
-    fn start_object(&mut self, _len: Option<usize>) -> Result<(), Self::Error> {
-        self.start_value()?;
-        self.writer.write_all(b"{")?;
-        self.stack.push(StackItem::ObjectItem {
-            object_state: ObjectItemState::FirstKey,
-        });
-        Ok(())
-    }
-
-    fn end_object(&mut self) -> Result<(), Self::Error> {
-        let object = self.stack.pop().unwrap();
-        match object {
-            StackItem::ArrayItem { .. } => unreachable!(),
-            StackItem::ObjectItem { object_state } => match object_state {
-                ObjectItemState::FirstKey | ObjectItemState::Key => {
-                    // good
-                }
-                ObjectItemState::Value => unreachable!(),
-            },
-        }
-        self.writer.write_all(b"}")?;
-        self.end_value()?;
-        Ok(())
-    }
-
-    fn start_array(&mut self, _len: Option<usize>) -> Result<(), Self::Error> {
-        self.start_value()?;
-        self.writer.write_all(b"[")?;
-        self.stack.push(StackItem::ArrayItem { first: true });
-        Ok(())
-    }
-
-    fn end_array(&mut self) -> Result<(), Self::Error> {
-        let item = self.stack.pop().unwrap();
-        match item {
-            StackItem::ArrayItem { .. } => {
-                // good
-            }
-            StackItem::ObjectItem { .. } => unreachable!(),
-        }
-        self.writer.write_all(b"]")?;
-        self.end_value()?;
-        Ok(())
-    }
-
-    fn start_map(&mut self, _len: Option<usize>) -> Result<(), Self::Error> {
-        self.start_object(_len)
-    }
-
-    fn end_map(&mut self) -> Result<(), Self::Error> {
-        self.end_object()
-    }
-
-    fn serialize_field_name(&mut self, name: &'static str) -> Result<(), Self::Error> {
-        // Handle object key comma logic
-        if let Some(StackItem::ObjectItem { object_state }) = self.stack.last_mut() {
-            match object_state {
-                ObjectItemState::FirstKey => {
-                    *object_state = ObjectItemState::Key;
-                }
-                ObjectItemState::Key => {
-                    self.writer.write_all(b",")?;
-                }
-                ObjectItemState::Value => unreachable!(),
-            }
-        }
-        write_json_string(&mut self.writer, name)?;
-        if let Some(StackItem::ObjectItem { object_state }) = self.stack.last_mut() {
-            *object_state = ObjectItemState::Value;
-        }
-        Ok(())
+        // Try to get the Some value, then repeat
+        peek = peek_option.value()?;
     }
 }
 

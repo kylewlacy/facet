@@ -2,28 +2,20 @@ use std::io::{self, Write};
 
 use alloc::collections::VecDeque;
 use facet_core::{Def, Facet, ScalarAffinity, StructKind};
-use facet_reflect::{HasFields, Peek};
+use facet_reflect::{
+    Peek, PeekEnum, PeekListLike, PeekListLikeIter, PeekMap, PeekMapIter, PeekStruct, PeekTuple,
+};
 
-#[derive(Debug)]
 enum SerializeOp<'mem, 'facet_lifetime> {
     Value(Peek<'mem, 'facet_lifetime>),
     Array {
         first: bool,
-        items: VecDeque<Peek<'mem, 'facet_lifetime>>,
+        items: ItemIter<'mem, 'facet_lifetime>,
     },
     Object {
         first: bool,
-        entries: VecDeque<(
-            ObjectKey<'mem, 'facet_lifetime>,
-            Peek<'mem, 'facet_lifetime>,
-        )>,
+        entries: EntryIter<'mem, 'facet_lifetime>,
     },
-}
-
-#[derive(Debug)]
-enum ObjectKey<'mem, 'facet_lifetime> {
-    String(&'static str),
-    Value(Peek<'mem, 'facet_lifetime>),
 }
 
 /// Serializes a value to JSON
@@ -55,7 +47,7 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     write!(writer, "[").unwrap();
                 }
 
-                let Some(next_item) = items.pop_front() else {
+                let Some(next_item) = items.next() else {
                     // Finished writing list, go to the next op
                     write!(writer, "]").unwrap();
                     continue;
@@ -76,7 +68,7 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     write!(writer, "{{").unwrap();
                 }
 
-                let Some((key, entry)) = entries.pop_front() else {
+                let Some((key, entry)) = entries.next() else {
                     write!(writer, "}}").unwrap();
                     continue;
                 };
@@ -139,9 +131,11 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     }
                 }
                 ScalarAffinity::Empty(_) => {
+                    // Empty - write as null
                     write!(writer, "null").unwrap();
                 }
                 _ => {
+                    // Otherwise, stringify the value
                     if let Some(s) = value.as_str() {
                         write_json_string(writer, s).unwrap();
                     } else {
@@ -151,13 +145,21 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                 }
             }
         } else if let Some(s) = value.as_str() {
+            // String value
+            // TODO: Should strings be scalars? It feels like they should...
             write_json_string(writer, s).unwrap();
         } else if let Ok(peek_tuple) = value.into_tuple() {
-            let items = peek_tuple.fields().map(|(_, field)| field).collect();
-            queue.push_front(SerializeOp::Array { first: true, items });
+            // Encode tuple as an array
+            queue.push_front(SerializeOp::Array {
+                first: true,
+                items: ItemIter::new_tuple(peek_tuple),
+            });
         } else if let Ok(peek_list) = value.into_list_like() {
-            let items = peek_list.iter().collect();
-            queue.push_front(SerializeOp::Array { first: true, items });
+            // Write any list-like value as an array
+            queue.push_front(SerializeOp::Array {
+                first: true,
+                items: ItemIter::new_list_like(peek_list),
+            });
         } else if let Ok(peek_struct) = value.into_struct() {
             match peek_struct.ty().kind {
                 StructKind::Unit => {
@@ -167,21 +169,14 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                 }
                 StructKind::TupleStruct => {
                     // Tuple struct, serialize as an array
-                    let items = peek_struct
-                        .fields_for_serialize()
-                        .map(|(_, value)| value)
-                        .collect();
+                    let items = ItemIter::new_struct(peek_struct);
                     queue.push_front(SerializeOp::Array { first: true, items });
                 }
                 StructKind::Struct => {
                     // Serialize struct as object
-                    let entries = peek_struct
-                        .fields_for_serialize()
-                        .map(|(key, value)| (ObjectKey::String(key.name), value))
-                        .collect();
                     queue.push_front(SerializeOp::Object {
                         first: true,
-                        entries,
+                        entries: EntryIter::new_struct(peek_struct),
                     });
                 }
                 _ => unimplemented!("unsupported struct kind"),
@@ -203,7 +198,7 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     write!(writer, ":").unwrap();
                     queue.push_front(SerializeOp::Object {
                         first: false,
-                        entries: VecDeque::new(),
+                        entries: EntryIter::Empty,
                     });
 
                     let inner = peek_enum.field(0).unwrap().unwrap();
@@ -217,13 +212,10 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     write!(writer, ":").unwrap();
                     queue.push_front(SerializeOp::Object {
                         first: false,
-                        entries: VecDeque::new(),
+                        entries: EntryIter::Empty,
                     });
 
-                    let items = peek_enum
-                        .fields_for_serialize()
-                        .map(|(_, item)| item)
-                        .collect();
+                    let items = ItemIter::new_enum(peek_enum);
                     queue.push_front(SerializeOp::Array { first: true, items });
                 }
                 StructKind::Struct => {
@@ -235,28 +227,20 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                     write!(writer, ":").unwrap();
                     queue.push_front(SerializeOp::Object {
                         first: false,
-                        entries: VecDeque::new(),
+                        entries: EntryIter::Empty,
                     });
 
-                    let entries = peek_enum
-                        .fields_for_serialize()
-                        .map(|(field, value)| (ObjectKey::String(field.name), value))
-                        .collect();
                     queue.push_front(SerializeOp::Object {
                         first: true,
-                        entries,
+                        entries: EntryIter::new_enum(peek_enum),
                     });
                 }
                 kind => unimplemented!("unhandled enum variant kind for shape {shape}: {kind:?}"),
             }
         } else if let Ok(map) = value.into_map() {
-            let entries = map
-                .iter()
-                .map(|(key, value)| (ObjectKey::Value(key), value))
-                .collect();
             queue.push_front(SerializeOp::Object {
                 first: true,
-                entries,
+                entries: EntryIter::new_map(map),
             });
         } else {
             todo!("unhandled shape {shape}: {:?}", shape.def);
@@ -319,6 +303,151 @@ fn write_json_escaped_char<W: Write>(writer: &mut W, c: char) -> io::Result<()> 
             let mut buf = [0; 4];
             let len = c.encode_utf8(&mut buf).len();
             writer.write_all(&buf[..len])
+        }
+    }
+}
+
+enum ItemIter<'mem, 'facet_lifetime> {
+    ListLike(PeekListLikeIter<'mem, 'facet_lifetime>),
+    Tuple {
+        tuple: PeekTuple<'mem, 'facet_lifetime>,
+        next_field: usize,
+    },
+    Struct {
+        struct_: PeekStruct<'mem, 'facet_lifetime>,
+        next_field: usize,
+    },
+    Enum {
+        enum_: PeekEnum<'mem, 'facet_lifetime>,
+        next_field: usize,
+    },
+}
+
+impl<'mem, 'facet_lifetime> ItemIter<'mem, 'facet_lifetime> {
+    fn new_list_like(value: PeekListLike<'mem, 'facet_lifetime>) -> Self {
+        Self::ListLike(value.iter())
+    }
+
+    fn new_tuple(value: PeekTuple<'mem, 'facet_lifetime>) -> Self {
+        Self::Tuple {
+            tuple: value,
+            next_field: 0,
+        }
+    }
+
+    fn new_struct(value: PeekStruct<'mem, 'facet_lifetime>) -> Self {
+        Self::Struct {
+            struct_: value,
+            next_field: 0,
+        }
+    }
+
+    fn new_enum(value: PeekEnum<'mem, 'facet_lifetime>) -> Self {
+        Self::Enum {
+            enum_: value,
+            next_field: 0,
+        }
+    }
+}
+
+impl<'mem, 'facet_lifetime> Iterator for ItemIter<'mem, 'facet_lifetime> {
+    type Item = Peek<'mem, 'facet_lifetime>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::ListLike(iter) => iter.next(),
+            Self::Tuple { tuple, next_field } => {
+                let value = tuple.field(*next_field)?;
+                *next_field += 1;
+                Some(value)
+            }
+            Self::Struct {
+                struct_,
+                next_field,
+            } => {
+                let value = struct_.field(*next_field).ok()?;
+                *next_field += 1;
+                Some(value)
+            }
+            Self::Enum { enum_, next_field } => {
+                let value = enum_.field(*next_field).unwrap()?;
+                *next_field += 1;
+                Some(value)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ObjectKey<'mem, 'facet_lifetime> {
+    String(&'static str),
+    Value(Peek<'mem, 'facet_lifetime>),
+}
+
+enum EntryIter<'mem, 'facet_lifetime> {
+    Empty,
+    Map(PeekMapIter<'mem, 'facet_lifetime>),
+    Struct {
+        struct_: PeekStruct<'mem, 'facet_lifetime>,
+        next_field: usize,
+    },
+    Enum {
+        enum_: PeekEnum<'mem, 'facet_lifetime>,
+        next_field: usize,
+    },
+}
+
+impl<'mem, 'facet_lifetime> EntryIter<'mem, 'facet_lifetime> {
+    fn new_map(value: PeekMap<'mem, 'facet_lifetime>) -> Self {
+        Self::Map(value.iter())
+    }
+
+    fn new_struct(value: PeekStruct<'mem, 'facet_lifetime>) -> Self {
+        Self::Struct {
+            struct_: value,
+            next_field: 0,
+        }
+    }
+
+    fn new_enum(value: PeekEnum<'mem, 'facet_lifetime>) -> Self {
+        Self::Enum {
+            enum_: value,
+            next_field: 0,
+        }
+    }
+}
+
+impl<'mem, 'facet_lifetime> Iterator for EntryIter<'mem, 'facet_lifetime> {
+    type Item = (
+        ObjectKey<'mem, 'facet_lifetime>,
+        Peek<'mem, 'facet_lifetime>,
+    );
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::Map(iter) => {
+                let (key, value) = iter.next()?;
+                Some((ObjectKey::Value(key), value))
+            }
+            Self::Struct {
+                struct_,
+                next_field,
+            } => {
+                let value = struct_.field(*next_field).ok()?;
+                let field = struct_.ty().fields[*next_field];
+                *next_field += 1;
+
+                Some((ObjectKey::String(field.name), value))
+            }
+            Self::Enum { enum_, next_field } => {
+                let value = enum_.field(*next_field).unwrap()?;
+                let variant = enum_.active_variant().unwrap();
+                let field = variant.data.fields[*next_field];
+                *next_field += 1;
+
+                Some((ObjectKey::String(field.name), value))
+            }
         }
     }
 }

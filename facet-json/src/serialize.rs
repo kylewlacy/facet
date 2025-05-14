@@ -69,6 +69,7 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
                 }
 
                 let Some((key, entry)) = entries.next() else {
+                    // Finished writing object entries, go to the next op
                     write!(writer, "}}").unwrap();
                     continue;
                 };
@@ -183,61 +184,56 @@ pub fn peek_to_writer<W: Write>(peek: &Peek<'_, '_>, writer: &mut W) -> io::Resu
             }
         } else if let Ok(peek_enum) = value.into_enum() {
             let variant = peek_enum.active_variant().unwrap();
-            match variant.data.kind {
-                StructKind::Unit => {
-                    // Unit enum variant, serialize as a string based on the
-                    // variant name
-                    write_json_string(writer, variant.name).unwrap();
+
+            if variant.data.kind == StructKind::Unit {
+                // Unit enum variant, serialize as a string based on the
+                // variant name
+
+                write_json_string(writer, variant.name).unwrap();
+            } else {
+                // For other enums, serialize as an object with one entry: the
+                // variant name as the key and the value as the variant's data
+
+                // Directly serialize the enum object. We then push an op
+                // to the queue with `first: false` to close the object
+                // once the content has been written.
+                write!(writer, "{{").unwrap();
+                write_json_string(writer, variant.name).unwrap();
+                write!(writer, ":").unwrap();
+                queue.push_front(SerializeOp::Object {
+                    first: false,
+                    entries: EntryIter::Empty,
+                });
+
+                match variant.data.kind {
+                    StructKind::Unit => unreachable!(),
+                    StructKind::Tuple if variant.data.fields.len() == 1 => {
+                        // Single-element tuple variant, serialize the inner
+                        // variant transparently
+
+                        let inner = peek_enum.field(0).unwrap().unwrap();
+                        queue.push_front(SerializeOp::Value(inner));
+                    }
+                    StructKind::Tuple => {
+                        // Normal tuple variant, serialize the variant as an array
+
+                        let items = ItemIter::new_enum(peek_enum);
+                        queue.push_front(SerializeOp::Array { first: true, items });
+                    }
+                    StructKind::Struct => {
+                        // Struct variant, serialize as an object
+                        queue.push_front(SerializeOp::Object {
+                            first: true,
+                            entries: EntryIter::new_enum(peek_enum),
+                        });
+                    }
+                    kind => {
+                        unimplemented!("unhandled enum variant kind for shape {shape}: {kind:?}");
+                    }
                 }
-                StructKind::Tuple if variant.data.fields.len() == 1 => {
-                    // Single-element tuple variant, serialize the inner
-                    // variant transparently
-
-                    write!(writer, "{{").unwrap();
-                    write_json_string(writer, variant.name).unwrap();
-                    write!(writer, ":").unwrap();
-                    queue.push_front(SerializeOp::Object {
-                        first: false,
-                        entries: EntryIter::Empty,
-                    });
-
-                    let inner = peek_enum.field(0).unwrap().unwrap();
-                    queue.push_front(SerializeOp::Value(inner));
-                }
-                StructKind::Tuple => {
-                    // Normal tuple variant, serialize the variant as an array
-
-                    write!(writer, "{{").unwrap();
-                    write_json_string(writer, variant.name).unwrap();
-                    write!(writer, ":").unwrap();
-                    queue.push_front(SerializeOp::Object {
-                        first: false,
-                        entries: EntryIter::Empty,
-                    });
-
-                    let items = ItemIter::new_enum(peek_enum);
-                    queue.push_front(SerializeOp::Array { first: true, items });
-                }
-                StructKind::Struct => {
-                    // Struct variant, serialize as an object
-                    // Normal tuple variant, serialize the variant as an array
-
-                    write!(writer, "{{").unwrap();
-                    write_json_string(writer, variant.name).unwrap();
-                    write!(writer, ":").unwrap();
-                    queue.push_front(SerializeOp::Object {
-                        first: false,
-                        entries: EntryIter::Empty,
-                    });
-
-                    queue.push_front(SerializeOp::Object {
-                        first: true,
-                        entries: EntryIter::new_enum(peek_enum),
-                    });
-                }
-                kind => unimplemented!("unhandled enum variant kind for shape {shape}: {kind:?}"),
             }
         } else if let Ok(map) = value.into_map() {
+            // Serialize a map as an object
             queue.push_front(SerializeOp::Object {
                 first: true,
                 entries: EntryIter::new_map(map),

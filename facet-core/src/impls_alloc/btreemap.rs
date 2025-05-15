@@ -6,7 +6,7 @@ use alloc::{
 };
 
 use crate::{
-    Def, Facet, MapDef, MapIterVTable, MapVTable, MarkerTraits, PtrConst, PtrMut, Shape, Type,
+    Def, Facet, IterVTable, MapDef, MapVTable, MarkerTraits, PtrConst, PtrMut, Shape, Type,
     UserType, VTableView, ValueVTable,
 };
 
@@ -160,15 +160,16 @@ where
                                     let map = ptr.get::<Self>();
                                     map.get(key.get()).map(|v| PtrConst::new(v as *const _))
                                 })
-                                .iter(|ptr| unsafe {
-                                    let map = ptr.get::<Self>();
-                                    let keys: VecDeque<&K> = map.keys().collect();
-                                    let iter_state = Box::new(BTreeMapIterator { map: ptr, keys });
-                                    PtrMut::new(Box::into_raw(iter_state) as *mut u8)
-                                })
                                 .iter_vtable(
-                                    MapIterVTable::builder()
-                                        .next(|iter_ptr| unsafe {
+                                    IterVTable::builder()
+                                        .init_with_value(|ptr| unsafe {
+                                            let map = ptr.get::<Self>();
+                                            let keys: VecDeque<&K> = map.keys().collect();
+                                            let iter_state =
+                                                Box::new(BTreeMapIterator { map: ptr, keys });
+                                            PtrMut::new(Box::into_raw(iter_state) as *mut u8)
+                                        })
+                                        .next_pair(|iter_ptr| unsafe {
                                             let state =
                                                 iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
                                             let map = state.map.get::<Self>();
@@ -183,7 +184,7 @@ where
 
                                             None
                                         })
-                                        .next_back(|iter_ptr| unsafe {
+                                        .next_pair_back(|iter_ptr| unsafe {
                                             let state =
                                                 iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
                                             let map = state.map.get::<Self>();
@@ -193,6 +194,30 @@ where
                                                         PtrConst::new(key as *const K),
                                                         PtrConst::new(value as *const V),
                                                     ));
+                                                }
+                                            }
+
+                                            None
+                                        })
+                                        .next(|iter_ptr| unsafe {
+                                            let state =
+                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
+                                            let map = state.map.get::<Self>();
+                                            while let Some(key) = state.keys.pop_front() {
+                                                if let Some(value) = map.get(key) {
+                                                    return Some(PtrConst::new(value as *const V));
+                                                }
+                                            }
+
+                                            None
+                                        })
+                                        .next_back(|iter_ptr| unsafe {
+                                            let state =
+                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
+                                            let map = state.map.get::<Self>();
+                                            while let Some(key) = state.keys.pop_back() {
+                                                if let Some(value) = map.get(key) {
+                                                    return Some(PtrConst::new(value as *const V));
                                                 }
                                             }
 

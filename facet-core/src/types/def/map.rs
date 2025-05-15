@@ -1,6 +1,6 @@
 use crate::ptr::{PtrConst, PtrMut, PtrUninit};
 
-use super::Shape;
+use super::{IterVTable, Shape};
 
 /// Fields for map types
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -120,108 +120,6 @@ pub type MapContainsKeyFn =
 pub type MapGetValuePtrFn =
     for<'map, 'key> unsafe fn(map: PtrConst<'map>, key: PtrConst<'key>) -> Option<PtrConst<'map>>;
 
-/// Get an iterator over the map
-///
-/// # Safety
-///
-/// The `map` parameter must point to aligned, initialized memory of the correct type.
-pub type MapIterFn = for<'map> unsafe fn(map: PtrConst<'map>) -> PtrMut<'map>;
-
-/// Get the next key-value pair from the iterator
-///
-/// # Safety
-///
-/// The `iter` parameter must point to aligned, initialized memory of the correct type.
-pub type MapIterNextFn =
-    for<'iter> unsafe fn(iter: PtrMut<'iter>) -> Option<(PtrConst<'iter>, PtrConst<'iter>)>;
-
-/// Get the next key-value pair from the end of the iterator
-///
-/// # Safety
-///
-/// The `iter` parameter must point to aligned, initialized memory of the correct type.
-pub type MapIterNextBackFn =
-    for<'iter> unsafe fn(iter: PtrMut<'iter>) -> Option<(PtrConst<'iter>, PtrConst<'iter>)>;
-
-/// Deallocate the iterator
-///
-/// # Safety
-///
-/// The `iter` parameter must point to aligned, initialized memory of the correct type.
-pub type MapIterDeallocFn = for<'iter> unsafe fn(iter: PtrMut<'iter>);
-
-/// VTable for an iterator over a map
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[repr(C)]
-#[non_exhaustive]
-pub struct MapIterVTable {
-    /// cf. [`MapIterNextFn`]
-    pub next: MapIterNextFn,
-
-    /// cf. [`MapIterNextBackFn`]
-    pub next_back: MapIterNextBackFn,
-
-    /// cf. [`MapIterDeallocFn`]
-    pub dealloc: MapIterDeallocFn,
-}
-
-impl MapIterVTable {
-    /// Returns a builder for MapIterVTable
-    pub const fn builder() -> MapIterVTableBuilder {
-        MapIterVTableBuilder::new()
-    }
-}
-
-/// Builds a [`MapIterVTable`]
-pub struct MapIterVTableBuilder {
-    next: Option<MapIterNextFn>,
-    next_back: Option<MapIterNextBackFn>,
-    dealloc: Option<MapIterDeallocFn>,
-}
-
-impl MapIterVTableBuilder {
-    /// Creates a new [`MapIterVTableBuilder`] with all fields set to `None`.
-    #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-        Self {
-            next: None,
-            next_back: None,
-            dealloc: None,
-        }
-    }
-
-    /// Sets the next field
-    pub const fn next(mut self, f: MapIterNextFn) -> Self {
-        self.next = Some(f);
-        self
-    }
-
-    /// Sets the next_back field
-    pub const fn next_back(mut self, f: MapIterNextBackFn) -> Self {
-        self.next_back = Some(f);
-        self
-    }
-
-    /// Sets the dealloc field
-    pub const fn dealloc(mut self, f: MapIterDeallocFn) -> Self {
-        self.dealloc = Some(f);
-        self
-    }
-
-    /// Builds the [`MapIterVTable`] from the current state of the builder.
-    ///
-    /// # Panics
-    ///
-    /// This method will panic if any of the required fields are `None`.
-    pub const fn build(self) -> MapIterVTable {
-        MapIterVTable {
-            next: self.next.unwrap(),
-            next_back: self.next_back.unwrap(),
-            dealloc: self.dealloc.unwrap(),
-        }
-    }
-}
-
 /// Virtual table for a Map<K, V>
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -241,11 +139,8 @@ pub struct MapVTable {
     /// cf. [`MapGetValuePtrFn`]
     pub get_value_ptr_fn: MapGetValuePtrFn,
 
-    /// cf. [`MapIterFn`]
-    pub iter_fn: MapIterFn,
-
     /// Virtual table for map iterator operations
-    pub iter_vtable: MapIterVTable,
+    pub iter_vtable: IterVTable,
 }
 
 impl MapVTable {
@@ -262,8 +157,7 @@ pub struct MapVTableBuilder {
     len_fn: Option<MapLenFn>,
     contains_key_fn: Option<MapContainsKeyFn>,
     get_value_ptr_fn: Option<MapGetValuePtrFn>,
-    iter_fn: Option<MapIterFn>,
-    iter_vtable: Option<MapIterVTable>,
+    iter_vtable: Option<IterVTable>,
 }
 
 impl MapVTableBuilder {
@@ -276,7 +170,6 @@ impl MapVTableBuilder {
             len_fn: None,
             contains_key_fn: None,
             get_value_ptr_fn: None,
-            iter_fn: None,
             iter_vtable: None,
         }
     }
@@ -311,14 +204,8 @@ impl MapVTableBuilder {
         self
     }
 
-    /// Sets the iter_fn field
-    pub const fn iter(mut self, f: MapIterFn) -> Self {
-        self.iter_fn = Some(f);
-        self
-    }
-
     /// Sets the iter_vtable field
-    pub const fn iter_vtable(mut self, vtable: MapIterVTable) -> Self {
+    pub const fn iter_vtable(mut self, vtable: IterVTable) -> Self {
         self.iter_vtable = Some(vtable);
         self
     }
@@ -335,7 +222,6 @@ impl MapVTableBuilder {
             len_fn: self.len_fn.unwrap(),
             contains_key_fn: self.contains_key_fn.unwrap(),
             get_value_ptr_fn: self.get_value_ptr_fn.unwrap(),
-            iter_fn: self.iter_fn.unwrap(),
             iter_vtable: self.iter_vtable.unwrap(),
         }
     }

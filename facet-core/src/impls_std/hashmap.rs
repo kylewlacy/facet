@@ -6,7 +6,7 @@ use std::hash::RandomState;
 use crate::ptr::{PtrConst, PtrMut};
 
 use crate::{
-    Def, Facet, MapDef, MapIterVTable, MapVTable, MarkerTraits, ScalarAffinity, ScalarDef, Shape,
+    Def, Facet, IterVTable, MapDef, MapVTable, MarkerTraits, ScalarAffinity, ScalarDef, Shape,
     Type, TypeParam, UserType, VTableView, ValueVTable, value_vtable,
 };
 
@@ -163,15 +163,16 @@ where
                                     let map = ptr.get::<HashMap<K, V>>();
                                     map.get(key.get()).map(|v| PtrConst::new(v))
                                 })
-                                .iter(|ptr| unsafe {
-                                    let map = ptr.get::<HashMap<K, V>>();
-                                    let keys: VecDeque<&K> = map.keys().collect();
-                                    let iter_state = Box::new(HashMapIterator { map: ptr, keys });
-                                    PtrMut::new(Box::into_raw(iter_state) as *mut u8)
-                                })
                                 .iter_vtable(
-                                    MapIterVTable::builder()
-                                        .next(|iter_ptr| unsafe {
+                                    IterVTable::builder()
+                                        .init_with_value(|ptr| unsafe {
+                                            let map = ptr.get::<HashMap<K, V>>();
+                                            let keys: VecDeque<&K> = map.keys().collect();
+                                            let iter_state =
+                                                Box::new(HashMapIterator { map: ptr, keys });
+                                            PtrMut::new(Box::into_raw(iter_state) as *mut u8)
+                                        })
+                                        .next_pair(|iter_ptr| unsafe {
                                             let state = iter_ptr.as_mut::<HashMapIterator<'_, K>>();
                                             let map = state.map.get::<HashMap<K, V>>();
                                             while let Some(key) = state.keys.pop_front() {
@@ -185,7 +186,7 @@ where
 
                                             None
                                         })
-                                        .next_back(|iter_ptr| unsafe {
+                                        .next_pair_back(|iter_ptr| unsafe {
                                             let state = iter_ptr.as_mut::<HashMapIterator<'_, K>>();
                                             let map = state.map.get::<HashMap<K, V>>();
                                             while let Some(key) = state.keys.pop_back() {
@@ -194,6 +195,28 @@ where
                                                         PtrConst::new(key as *const K),
                                                         PtrConst::new(value as *const V),
                                                     ));
+                                                }
+                                            }
+
+                                            None
+                                        })
+                                        .next(|iter_ptr| unsafe {
+                                            let state = iter_ptr.as_mut::<HashMapIterator<'_, K>>();
+                                            let map = state.map.get::<HashMap<K, V>>();
+                                            while let Some(key) = state.keys.pop_front() {
+                                                if let Some(value) = map.get(key) {
+                                                    return Some(PtrConst::new(value as *const V));
+                                                }
+                                            }
+
+                                            None
+                                        })
+                                        .next_back(|iter_ptr| unsafe {
+                                            let state = iter_ptr.as_mut::<HashMapIterator<'_, K>>();
+                                            let map = state.map.get::<HashMap<K, V>>();
+                                            while let Some(key) = state.keys.pop_back() {
+                                                if let Some(value) = map.get(key) {
+                                                    return Some(PtrConst::new(value as *const V));
                                                 }
                                             }
 

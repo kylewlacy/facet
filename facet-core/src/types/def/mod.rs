@@ -6,6 +6,9 @@ pub use array::*;
 mod slice;
 pub use slice::*;
 
+mod iter;
+pub use iter::*;
+
 mod list;
 pub use list::*;
 

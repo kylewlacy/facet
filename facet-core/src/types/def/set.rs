@@ -1,6 +1,6 @@
 use crate::ptr::{PtrConst, PtrMut, PtrUninit};
 
-use super::Shape;
+use super::{IterVTable, Shape};
 
 /// Fields for set types
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -97,87 +97,6 @@ pub type SetLenFn = for<'set> unsafe fn(set: PtrConst<'set>) -> usize;
 pub type SetContainsFn =
     for<'set, 'value> unsafe fn(set: PtrConst<'set>, value: PtrConst<'value>) -> bool;
 
-/// Get an iterator over the set
-///
-/// # Safety
-///
-/// The `set` parameter must point to aligned, initialized memory of the correct type.
-pub type SetIterFn = for<'set> unsafe fn(set: PtrConst<'set>) -> PtrMut<'set>;
-
-/// Get the next value from the iterator
-///
-/// # Safety
-///
-/// The `iter` parameter must point to aligned, initialized memory of the correct type.
-pub type SetIterNextFn = for<'iter> unsafe fn(iter: PtrMut<'iter>) -> Option<PtrConst<'iter>>;
-
-/// Deallocate the iterator
-///
-/// # Safety
-///
-/// The `iter` parameter must point to aligned, initialized memory of the correct type.
-pub type SetIterDeallocFn = for<'iter> unsafe fn(iter: PtrMut<'iter>);
-
-/// VTable for an iterator over a set
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[repr(C)]
-#[non_exhaustive]
-pub struct SetIterVTable {
-    /// cf. [`SetIterNextFn`]
-    pub next: SetIterNextFn,
-
-    /// cf. [`SetIterDeallocFn`]
-    pub dealloc: SetIterDeallocFn,
-}
-
-impl SetIterVTable {
-    /// Returns a builder for SetIterVTable
-    pub const fn builder() -> SetIterVTableBuilder {
-        SetIterVTableBuilder::new()
-    }
-}
-
-/// Builds a [`SetIterVTable`]
-pub struct SetIterVTableBuilder {
-    next: Option<SetIterNextFn>,
-    dealloc: Option<SetIterDeallocFn>,
-}
-
-impl SetIterVTableBuilder {
-    /// Creates a new [`SetIterVTableBuilder`] with all fields set to `None`.
-    #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-        Self {
-            next: None,
-            dealloc: None,
-        }
-    }
-
-    /// Sets the next field
-    pub const fn next(mut self, f: SetIterNextFn) -> Self {
-        self.next = Some(f);
-        self
-    }
-
-    /// Sets the dealloc field
-    pub const fn dealloc(mut self, f: SetIterDeallocFn) -> Self {
-        self.dealloc = Some(f);
-        self
-    }
-
-    /// Builds the [`SetIterVTable`] from the current state of the builder.
-    ///
-    /// # Panics
-    ///
-    /// This method will panic if any of the required fields are `None`.
-    pub const fn build(self) -> SetIterVTable {
-        SetIterVTable {
-            next: self.next.unwrap(),
-            dealloc: self.dealloc.unwrap(),
-        }
-    }
-}
-
 /// Virtual table for a `Set<T>`
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -194,11 +113,8 @@ pub struct SetVTable {
     /// cf. [`SetContainsFn`]
     pub contains_fn: SetContainsFn,
 
-    /// cf. [`SetIterFn`]
-    pub iter_fn: SetIterFn,
-
     /// Virtual table for set iterator operations
-    pub iter_vtable: SetIterVTable,
+    pub iter_vtable: IterVTable,
 }
 
 impl SetVTable {
@@ -214,8 +130,7 @@ pub struct SetVTableBuilder {
     insert_fn: Option<SetInsertFn>,
     len_fn: Option<SetLenFn>,
     contains_fn: Option<SetContainsFn>,
-    iter_fn: Option<SetIterFn>,
-    iter_vtable: Option<SetIterVTable>,
+    iter_vtable: Option<IterVTable>,
 }
 
 impl SetVTableBuilder {
@@ -227,7 +142,6 @@ impl SetVTableBuilder {
             insert_fn: None,
             len_fn: None,
             contains_fn: None,
-            iter_fn: None,
             iter_vtable: None,
         }
     }
@@ -256,14 +170,8 @@ impl SetVTableBuilder {
         self
     }
 
-    /// Sets the iter_fn field
-    pub const fn iter(mut self, f: SetIterFn) -> Self {
-        self.iter_fn = Some(f);
-        self
-    }
-
     /// Sets the iter_vtable field
-    pub const fn iter_vtable(mut self, vtable: SetIterVTable) -> Self {
+    pub const fn iter_vtable(mut self, vtable: IterVTable) -> Self {
         self.iter_vtable = Some(vtable);
         self
     }
@@ -279,7 +187,6 @@ impl SetVTableBuilder {
             insert_fn: self.insert_fn.unwrap(),
             len_fn: self.len_fn.unwrap(),
             contains_fn: self.contains_fn.unwrap(),
-            iter_fn: self.iter_fn.unwrap(),
             iter_vtable: self.iter_vtable.unwrap(),
         }
     }

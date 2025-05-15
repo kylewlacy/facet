@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::ptr::{PtrConst, PtrMut};
 
 use crate::{
-    Def, Facet, MarkerTraits, SetDef, SetIterVTable, SetVTable, Shape, Type, TypeParam, UserType,
+    Def, Facet, IterVTable, MarkerTraits, SetDef, SetVTable, Shape, Type, TypeParam, UserType,
     VTableView, ValueVTable,
 };
 
@@ -127,14 +127,14 @@ where
                                     let set = ptr.get::<HashSet<T>>();
                                     set.contains(item.get())
                                 })
-                                .iter(|ptr| unsafe {
-                                    let set = ptr.get::<HashSet<T>>();
-                                    let items: VecDeque<&T> = set.iter().collect();
-                                    let iter_state = Box::new(HashSetIterator { items });
-                                    PtrMut::new(Box::into_raw(iter_state) as *mut u8)
-                                })
                                 .iter_vtable(
-                                    SetIterVTable::builder()
+                                    IterVTable::builder()
+                                        .init_with_value(|ptr| unsafe {
+                                            let set = ptr.get::<HashSet<T>>();
+                                            let items: VecDeque<&T> = set.iter().collect();
+                                            let iter_state = Box::new(HashSetIterator { items });
+                                            PtrMut::new(Box::into_raw(iter_state) as *mut u8)
+                                        })
                                         .next(|iter_ptr| unsafe {
                                             let state = iter_ptr.as_mut::<HashSetIterator<'_, T>>();
                                             state
@@ -250,7 +250,8 @@ mod tests {
         }
 
         // Create a new iterator over the HashSet
-        let hashset_iter_ptr = unsafe { (hashset_def.vtable.iter_fn)(hashset_ptr.as_const()) };
+        let iter_init_with_value_fn = hashset_def.vtable.iter_vtable.init_with_value.unwrap();
+        let hashset_iter_ptr = unsafe { iter_init_with_value_fn(hashset_ptr.as_const()) };
 
         // Collect all the items from the HashSet's iterator
         let mut iter_items = HashSet::<&str>::new();

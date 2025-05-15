@@ -6,7 +6,7 @@ use alloc::collections::BTreeSet;
 use crate::ptr::{PtrConst, PtrMut};
 
 use crate::{
-    Def, Facet, MarkerTraits, SetDef, SetIterVTable, SetVTable, Shape, Type, TypeParam, UserType,
+    Def, Facet, IterVTable, MarkerTraits, SetDef, SetVTable, Shape, Type, TypeParam, UserType,
     VTableView, ValueVTable,
 };
 
@@ -139,16 +139,16 @@ where
                                     let set = ptr.get::<BTreeSet<T>>();
                                     set.contains(item.get())
                                 })
-                                .iter(|ptr| {
-                                    let set = unsafe { ptr.get::<BTreeSet<T>>() };
-                                    let iter_state = Box::new(BTreeSetIterator {
-                                        set,
-                                        next_bound: core::ops::Bound::Unbounded,
-                                    });
-                                    PtrMut::new(Box::into_raw(iter_state) as *mut u8)
-                                })
                                 .iter_vtable(
-                                    SetIterVTable::builder()
+                                    IterVTable::builder()
+                                        .init_with_value(|ptr| {
+                                            let set = unsafe { ptr.get::<BTreeSet<T>>() };
+                                            let iter_state = Box::new(BTreeSetIterator {
+                                                set,
+                                                next_bound: core::ops::Bound::Unbounded,
+                                            });
+                                            PtrMut::new(Box::into_raw(iter_state) as *mut u8)
+                                        })
                                         .next(|iter_ptr| {
                                             let state = unsafe {
                                                 iter_ptr.as_mut::<BTreeSetIterator<'_, T>>()
@@ -263,7 +263,8 @@ mod tests {
         }
 
         // Create a new iterator over the BTreeSet
-        let btreeset_iter_ptr = unsafe { (btreeset_def.vtable.iter_fn)(btreeset_ptr.as_const()) };
+        let iter_init_with_value_fn = btreeset_def.vtable.iter_vtable.init_with_value.unwrap();
+        let btreeset_iter_ptr = unsafe { iter_init_with_value_fn(btreeset_ptr.as_const()) };
 
         // Collect all the items from the BTreeSet's iterator
         let mut iter_items = Vec::<&str>::new();

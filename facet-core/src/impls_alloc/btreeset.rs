@@ -134,6 +134,14 @@ where
                                                 .next()
                                                 .map(|value| PtrConst::new(value as *const T))
                                         })
+                                        .next_back(|iter_ptr| {
+                                            let state = unsafe {
+                                                iter_ptr.as_mut::<BTreeSetIterator<'_, T>>()
+                                            };
+                                            state
+                                                .next_back()
+                                                .map(|value| PtrConst::new(value as *const T))
+                                        })
                                         .dealloc(|iter_ptr| unsafe {
                                             drop(Box::from_raw(
                                                 iter_ptr.as_ptr::<BTreeSetIterator<'_, T>>()

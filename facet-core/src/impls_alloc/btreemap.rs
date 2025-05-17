@@ -1,19 +1,13 @@
 use core::write;
 
-use alloc::{
-    boxed::Box,
-    collections::{BTreeMap, VecDeque},
-};
+use alloc::{boxed::Box, collections::BTreeMap};
 
 use crate::{
     Def, Facet, IterVTable, MapDef, MapVTable, MarkerTraits, PtrConst, PtrMut, Shape, Type,
     UserType, VTableView, ValueVTable,
 };
 
-struct BTreeMapIterator<'mem, K> {
-    map: PtrConst<'mem>,
-    keys: VecDeque<&'mem K>,
-}
+type BTreeMapIterator<'mem, K, V> = alloc::collections::btree_map::Iter<'mem, K, V>;
 
 unsafe impl<'a, K, V> Facet<'a> for BTreeMap<K, V>
 where
@@ -164,45 +158,28 @@ where
                                     IterVTable::builder()
                                         .init_with_value(|ptr| unsafe {
                                             let map = ptr.get::<Self>();
-                                            let keys: VecDeque<&K> = map.keys().collect();
-                                            let iter_state =
-                                                Box::new(BTreeMapIterator { map: ptr, keys });
-                                            PtrMut::new(Box::into_raw(iter_state) as *mut u8)
+                                            let iter: BTreeMapIterator<'_, K, V> = map.iter();
+                                            let state = Box::new(iter);
+                                            PtrMut::new(Box::into_raw(state) as *mut u8)
                                         })
                                         .next(|iter_ptr| unsafe {
                                             let state =
-                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
-                                            let map = state.map.get::<Self>();
-                                            while let Some(key) = state.keys.pop_front() {
-                                                if let Some(value) = map.get(key) {
-                                                    return Some((
-                                                        PtrConst::new(key as *const K),
-                                                        PtrConst::new(value as *const V),
-                                                    ));
-                                                }
-                                            }
-
-                                            None
+                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K, V>>();
+                                            state.next().map(|(key, value)| {
+                                                (PtrConst::new(key), PtrConst::new(value))
+                                            })
                                         })
                                         .next_back(|iter_ptr| unsafe {
                                             let state =
-                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K>>();
-                                            let map = state.map.get::<Self>();
-                                            while let Some(key) = state.keys.pop_back() {
-                                                if let Some(value) = map.get(key) {
-                                                    return Some((
-                                                        PtrConst::new(key as *const K),
-                                                        PtrConst::new(value as *const V),
-                                                    ));
-                                                }
-                                            }
-
-                                            None
+                                                iter_ptr.as_mut::<BTreeMapIterator<'_, K, V>>();
+                                            state.next_back().map(|(key, value)| {
+                                                (PtrConst::new(key), PtrConst::new(value))
+                                            })
                                         })
                                         .dealloc(|iter_ptr| unsafe {
                                             drop(Box::from_raw(
-                                                iter_ptr.as_ptr::<BTreeMapIterator<'_, K>>()
-                                                    as *mut BTreeMapIterator<'_, K>,
+                                                iter_ptr.as_ptr::<BTreeMapIterator<'_, K, V>>()
+                                                    as *mut BTreeMapIterator<'_, K, V>,
                                             ))
                                         })
                                         .build(),

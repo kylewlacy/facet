@@ -24,21 +24,6 @@ impl<'mem, 'facet, 'shape> Iterator for PeekMapIter<'mem, 'facet, 'shape> {
     }
 }
 
-impl<'mem, 'facet, 'shape> DoubleEndedIterator for PeekMapIter<'mem, 'facet, 'shape> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let next_back_fn = self.map.def.vtable.iter_vtable.next_back.unwrap();
-        unsafe {
-            let next_back = next_back_fn(self.iter);
-            next_back.map(|(key_ptr, value_ptr)| {
-                (
-                    Peek::unchecked_new(key_ptr, self.map.def.k()),
-                    Peek::unchecked_new(value_ptr, self.map.def.v()),
-                )
-            })
-        }
-    }
-}
-
 impl<'mem, 'facet, 'shape> Drop for PeekMapIter<'mem, 'facet, 'shape> {
     fn drop(&mut self) {
         unsafe { (self.map.def.vtable.iter_vtable.dealloc)(self.iter) }

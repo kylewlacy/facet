@@ -10,28 +10,7 @@ use crate::{
     VTableView, ValueVTable,
 };
 
-struct BTreeSetIterator<'mem, T> {
-    set: &'mem BTreeSet<T>,
-    next_bound: core::ops::Bound<&'mem T>,
-}
-
-impl<'mem, T> BTreeSetIterator<'mem, T>
-where
-    T: Ord,
-{
-    fn next(&mut self) -> Option<&'mem T> {
-        let mut range = self
-            .set
-            .range((self.next_bound, core::ops::Bound::Unbounded));
-        let next = range.next();
-
-        if let Some(next) = next {
-            self.next_bound = core::ops::Bound::Excluded(next);
-        }
-
-        next
-    }
-}
+type BTreeSetIterator<'mem, T> = alloc::collections::btree_set::Iter<'mem, T>;
 
 unsafe impl<'a, T> Facet<'a> for BTreeSet<T>
 where
@@ -143,10 +122,8 @@ where
                                     IterVTable::builder()
                                         .init_with_value(|ptr| {
                                             let set = unsafe { ptr.get::<BTreeSet<T>>() };
-                                            let iter_state = Box::new(BTreeSetIterator {
-                                                set,
-                                                next_bound: core::ops::Bound::Unbounded,
-                                            });
+                                            let iter: BTreeSetIterator<'_, T> = set.iter();
+                                            let iter_state = Box::new(iter);
                                             PtrMut::new(Box::into_raw(iter_state) as *mut u8)
                                         })
                                         .next(|iter_ptr| {

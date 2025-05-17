@@ -1,4 +1,3 @@
-use alloc::collections::VecDeque;
 use core::hash::{BuildHasher, Hash};
 use std::collections::HashMap;
 use std::hash::RandomState;
@@ -10,10 +9,7 @@ use crate::{
     Type, TypeParam, UserType, VTableView, ValueVTable, value_vtable,
 };
 
-struct HashMapIterator<'mem, K> {
-    map: PtrConst<'mem>,
-    keys: VecDeque<&'mem K>,
-}
+type HashMapIterator<'mem, K, V> = std::collections::hash_map::Iter<'mem, K, V>;
 
 unsafe impl<'a, K, V, S> Facet<'a> for HashMap<K, V, S>
 where
@@ -167,29 +163,24 @@ where
                                     IterVTable::builder()
                                         .init_with_value(|ptr| unsafe {
                                             let map = ptr.get::<HashMap<K, V>>();
-                                            let keys: VecDeque<&K> = map.keys().collect();
-                                            let iter_state =
-                                                Box::new(HashMapIterator { map: ptr, keys });
+                                            let iter: HashMapIterator<'_, K, V> = map.iter();
+                                            let iter_state = Box::new(iter);
                                             PtrMut::new(Box::into_raw(iter_state) as *mut u8)
                                         })
                                         .next(|iter_ptr| unsafe {
-                                            let state = iter_ptr.as_mut::<HashMapIterator<'_, K>>();
-                                            let map = state.map.get::<HashMap<K, V>>();
-                                            while let Some(key) = state.keys.pop_front() {
-                                                if let Some(value) = map.get(key) {
-                                                    return Some((
-                                                        PtrConst::new(key as *const K),
-                                                        PtrConst::new(value as *const V),
-                                                    ));
-                                                }
-                                            }
-
-                                            None
+                                            let state =
+                                                iter_ptr.as_mut::<HashMapIterator<'_, K, V>>();
+                                            state.next().map(|(key, value)| {
+                                                (
+                                                    PtrConst::new(key as *const K),
+                                                    PtrConst::new(value as *const V),
+                                                )
+                                            })
                                         })
                                         .dealloc(|iter_ptr| unsafe {
                                             drop(Box::from_raw(
-                                                iter_ptr.as_ptr::<HashMapIterator<'_, K>>()
-                                                    as *mut HashMapIterator<'_, K>,
+                                                iter_ptr.as_ptr::<HashMapIterator<'_, K, V>>()
+                                                    as *mut HashMapIterator<'_, K, V>,
                                             ));
                                         })
                                         .build(),

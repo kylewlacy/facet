@@ -1,4 +1,3 @@
-use alloc::collections::VecDeque;
 use core::hash::{BuildHasher, Hash};
 use std::collections::HashSet;
 
@@ -9,9 +8,7 @@ use crate::{
     VTableView, ValueVTable,
 };
 
-struct HashSetIterator<'mem, T> {
-    items: VecDeque<&'mem T>,
-}
+type HashSetIterator<'mem, T> = std::collections::hash_set::Iter<'mem, T>;
 
 unsafe impl<'a, T, S> Facet<'a> for HashSet<T, S>
 where
@@ -131,16 +128,13 @@ where
                                     IterVTable::builder()
                                         .init_with_value(|ptr| unsafe {
                                             let set = ptr.get::<HashSet<T>>();
-                                            let items: VecDeque<&T> = set.iter().collect();
-                                            let iter_state = Box::new(HashSetIterator { items });
+                                            let iter: HashSetIterator<'_, T> = set.iter();
+                                            let iter_state = Box::new(iter);
                                             PtrMut::new(Box::into_raw(iter_state) as *mut u8)
                                         })
                                         .next(|iter_ptr| unsafe {
                                             let state = iter_ptr.as_mut::<HashSetIterator<'_, T>>();
-                                            state
-                                                .items
-                                                .pop_front()
-                                                .map(|item| PtrConst::new(item as *const T))
+                                            state.next().map(|value| PtrConst::new(value))
                                         })
                                         .dealloc(|iter_ptr| unsafe {
                                             drop(Box::from_raw(
